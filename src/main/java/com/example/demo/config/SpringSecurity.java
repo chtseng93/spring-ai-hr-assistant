@@ -24,7 +24,9 @@ public class SpringSecurity {
             .authorizeHttpRequests(auth -> auth
                 .requestMatchers("/health", "/login", "/logout").permitAll()
                 .requestMatchers("/api/jobs/**", "/api/resumes/**", "/api/ai/**").hasRole("HR")
-                .anyRequest().authenticated())
+                .requestMatchers("/api/**").authenticated()
+                // 其餘（index.html、/assets/**、前端 SPA 路由）放行，真正的安全邊界在 /api/**
+                .anyRequest().permitAll())
             // 成功/失敗改回純狀態碼，不做 302 導頁（配合 SPA fetch）
             .formLogin(form -> form
                 .successHandler((req, res, a) -> res.setStatus(200))
