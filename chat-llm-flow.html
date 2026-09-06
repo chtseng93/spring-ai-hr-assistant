@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="zh-TW">
+<head>
+<meta charset="utf-8">
+<title>Chat 詢問 LLM 流程</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.min.js"></script>
+<style>
+  body{font-family:"Microsoft JhengHei","PingFang TC",system-ui,sans-serif;font-size:13px;line-height:1.7;color:#1a1a1a;margin:32px;max-width:900px}
+  h1{font-size:20px;border-bottom:2px solid #333;padding-bottom:6px}
+  h2{font-size:15px;margin-top:26px;background:#f0f0ee;padding:5px 8px;border-left:4px solid #666}
+  code{background:#eee;padding:1px 4px;border-radius:3px;font-family:Consolas,monospace;font-size:12px}
+  .mermaid{margin:18px 0;text-align:center}
+  ol,ul{padding-left:22px}
+  li{margin:4px 0}
+  table{border-collapse:collapse;margin:12px 0;font-size:12px}
+  th,td{border:1px solid #ccc;padding:6px 10px;text-align:left}
+  th{background:#f0f0ee}
+  .note{background:#fff8e1;border:1px solid #e0c56e;padding:8px 12px;border-radius:4px;margin:12px 0}
+  .pagebreak{page-break-before:always}
+</style>
+</head>
+<body>
+
+<h1>Chat 對話：詢問 LLM 的完整流程</h1>
+
+<p>對象功能：前端「智能對話」頁（<code>Chat.jsx</code>），呼叫後端
+<code>GET /api/ai/rag/agent</code>。這是目前唯一會用到向量資料庫（<code>rag_documents</code> 表）的功能，
+但屬於<strong>工具觸發式檢索</strong>——由 LLM 自行決定要不要查，而非每則訊息都查。</p>
+
+<h2>參與角色</h2>
+<table>
+<tr><th>角色</th><th>對應程式</th><th>職責</th></tr>
+<tr><td>前端 Chat 頁</td><td><code>frontend/src/pages/Chat.jsx</code> → <code>lib/api.js chatAgent()</code></td><td>送出問題與 conversationId，顯示純文字回覆</td></tr>
+<tr><td>RagController</td><td><code>controller/ai/RagController.java:119</code></td><td>組系統提示、掛工具、掛對話記憶</td></tr>
+<tr><td>chatClient（@Primary）</td><td><code>config/AIConfig.java:35</code></td><td>只掛 MessageChatMemoryAdvisor，<strong>不掛</strong> QA advisor</td></tr>
+<tr><td>對話記憶 ChatMemory</td><td>Spring AI 內建</td><td>依 conversationId 存取歷史訊息</td></tr>
+<tr><td>Chat LLM</td><td>Groq <code>openai/gpt-oss-120b</code>（OpenAI 相容端點）</td><td>判斷是否呼叫工具、產生最終回答</td></tr>
+<tr><td>resumeSearchFunction</td><td><code>service/ai/ResumeSearchFunction.java:23</code></td><td>把關鍵字交給向量庫做語意搜尋</td></tr>
+<tr><td>PgVectorStore</td><td><code>service/ai/PgVectorStore.java:56</code></td><td>關鍵字向量化 + 對 rag_documents 跑 cosine 搜尋</td></tr>
+<tr><td>Embedding 模型</td><td>本機 Ollama <code>mxbai-embed-large</code>（1024 維）</td><td>把文字轉成向量</td></tr>
+<tr><td>PostgreSQL + pgvector</td><td><code>rag_documents</code> 表</td><td>儲存履歷片段的內容與向量</td></tr>
+</table>
+
+<h2>序列圖</h2>
+
+<pre class="mermaid">
+sequenceDiagram
+    autonumber
+    participant U as 使用者
+    participant FE as Chat 前端
+    participant RC as RagController<br/>/api/ai/rag/agent
+    participant CM as 對話記憶<br/>ChatMemory
+    participant LLM as Chat LLM<br/>(Groq gpt-oss-120b)
+    participant TF as resumeSearchFunction
+    participant VS as PgVectorStore
+    participant EM as Embedding<br/>(Ollama)
+    participant DB as PostgreSQL<br/>rag_documents
+
+    U->>FE: 輸入「林敬堯的專長是什麼?」
+    FE->>RC: GET query=... & conversationId=...
+    RC->>CM: 讀取此對話的歷史訊息
+    CM-->>RC: 過去的問答
+    RC->>LLM: 系統提示 + 歷史 + 本次問題<br/>（附工具定義）
+    Note over LLM: 第 1 次呼叫<br/>判斷「需要履歷內容」
+    LLM-->>RC: 工具呼叫 resumeSearchFunction(query="林敬堯 專長")
+    RC->>TF: 執行工具
+    TF->>VS: similaritySearch("林敬堯 專長")
+    VS->>EM: embed("林敬堯 專長")
+    EM-->>VS: 1024 維查詢向量
+    VS->>DB: SELECT ... ORDER BY embedding <=> 查詢向量 LIMIT k
+    DB-->>VS: 最相近的履歷片段
+    VS-->>TF: 片段清單
+    TF-->>RC: snippets（履歷片段全文）
+    RC->>LLM: 把工具結果回傳
+    Note over LLM: 第 2 次呼叫<br/>根據片段作答
+    LLM-->>RC: 「林敬堯的專長是……」純文字
+    RC->>CM: 寫回（本次問題 + 回答）
+    RC-->>FE: 純文字回覆
+    FE-->>U: 顯示回答
+</pre>
+
+<div class="pagebreak"></div>
+
+<h2>逐步解釋</h2>
+<ol>
+<li><strong>前端送出</strong>：<code>chatAgent(query, conversationId)</code> 打 <code>GET /api/ai/rag/agent</code>。conversationId 由整個瀏覽器分頁共用，讓多輪對話能延續。</li>
+<li><strong>載入對話記憶</strong>：<code>MessageChatMemoryAdvisor</code> 依 conversationId 從 <code>ChatMemory</code> 撈出歷史訊息，接在這次訊息前面。</li>
+<li><strong>組提示詞</strong>：RagController 指定系統提示（「你是誠邑建築公司的招聘助手，需要履歷內容時呼叫 resumeSearchFunction，多位候選人分別查一次」），加上使用者這次的問題。</li>
+<li><strong>第 1 次呼叫 LLM</strong>：連同兩個工具的定義（<code>resumeSearchFunction</code>、<code>recruitServiceFunction</code>）一起送給 Groq 上的 chat 模型。</li>
+<li><strong>LLM 決定要不要查</strong>：
+  <ul>
+  <li>問題牽涉履歷（例：某人的專長、年資、是否符合職缺）→ LLM 回傳一個「工具呼叫」，並<strong>自己決定關鍵字</strong>（可能是「林敬堯」或「林敬堯 專長」，程式沒有寫死）。</li>
+  <li>一般閒聊或非招聘問題 → LLM 不呼叫工具，直接作答，<strong>完全不碰向量庫</strong>。</li>
+  </ul>
+</li>
+<li><strong>執行工具 = 向量搜尋</strong>：
+  <ul>
+  <li><code>ResumeSearchFunction</code> 拿到關鍵字字串。</li>
+  <li><code>PgVectorStore.similaritySearch()</code> 先呼叫 <strong>Ollama embedding 模型</strong>把這個關鍵字轉成 1024 維向量——<em>這一步才是「把字串向量化」</em>。</li>
+  <li>用這個向量對 <code>rag_documents</code> 表下 SQL：<code>ORDER BY embedding &lt;=&gt; 查詢向量</code>（pgvector 的 cosine 距離運算子），取最接近的前幾筆，並過濾相似度門檻。</li>
+  <li>回傳這些履歷片段的原文。</li>
+  </ul>
+</li>
+<li><strong>片段回饋給 LLM</strong>：Spring AI 把工具結果附回對話。</li>
+<li><strong>第 2 次呼叫 LLM</strong>：LLM 讀履歷片段，整理成人看得懂的答案（例：「林敬堯的專長是結構設計與 BIM……」）。</li>
+<li><strong>寫回記憶</strong>：這次的問題與回答存進 <code>ChatMemory</code>，供下一輪使用。</li>
+<li><strong>回傳前端</strong>：純文字，無結構化來源欄位；前端直接把文字貼進對話泡泡。</li>
+</ol>
+
+<div class="note">
+<strong>重點澄清</strong>：被向量化的是「LLM 決定丟給工具的關鍵字」，不是你原本那句完整問題。
+整個過程 LLM 被呼叫兩次：第一次決定查什麼、第二次根據結果作答。
+</div>
+
+<h2>與另一個 RAG 端點的差異</h2>
+<table>
+<tr><th></th><th>/api/ai/rag/agent（Chat 在用）</th><th>/api/ai/rag（未使用）</th></tr>
+<tr><td>ChatClient</td><td><code>chatClient</code>（@Primary）</td><td><code>ragChatClient</code></td></tr>
+<tr><td>檢索方式</td><td>LLM 判斷後呼叫工具才檢索</td><td><code>QuestionAnswerAdvisor</code> 每則訊息<strong>自動</strong>檢索並注入（topK=5、門檻 0.7）</td></tr>
+<tr><td>可查幾次</td><td>LLM 可針對多位候選人分別查多次</td><td>固定一次</td></tr>
+<tr><td>前端是否呼叫</td><td>是</td><td>否（<code>api.js</code> 無對應函式）</td></tr>
+</table>
+
+<script>
+  mermaid.initialize({ startOnLoad: true, sequence: { useMaxWidth: true }, theme: 'neutral' });
+</script>
+</body>
+</html>
