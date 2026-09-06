@@ -17,7 +17,6 @@
 | 文字轉向量 | `EmbeddingModel`（dev: Ollama／prod: Mistral） |
 | 向量庫 | 自刻 `VectorStore`（`PgVectorStore`），底層用 pgvector 的 `<=>` cosine 距離 |
 | 對話作答 | `ChatClient` |
-| 自動檢索注入 | `QuestionAnswerAdvisor`（`/api/ai/rag`，topK 5、門檻 0.7） |
 | 由 LLM 自行檢索 | Function Calling — `ResumeSearchFunction` 以 `@Description` 註冊成工具，LLM 自己決定用什麼關鍵字查幾次（`/api/ai/rag/agent`） |
 | 對話記憶 | `MessageChatMemoryAdvisor` + `ChatMemory`（JDBC 持久化，以 `conversationId` 分流） |
 
