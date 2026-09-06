@@ -2,7 +2,7 @@
 
 基於 Spring AI 與 RAG 的智慧招募小助手：整合履歷上傳、Embedding 向量化、pgvector 向量資料庫與自然語言問答，實現履歷內容檢索與職缺智慧匹配。
 
-![Demo](docs/demo.gif)
+![Demo](assets/demo.gif)
 
 ## 兩個主要功能與所用 Spring AI 技術
 
